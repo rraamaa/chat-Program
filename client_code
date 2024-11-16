@@ -1,0 +1,75 @@
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+
+#define SERVER_PORT 8080
+#define BUFFER_SIZE 1024
+#define PIPE_NAME "\\\\.\\pipe\\MyNamedPipe"
+
+int main() {
+    HANDLE pipe;
+    char buffer[BUFFER_SIZE];
+    char name[50]; // Buffer for nickname
+    DWORD bytesRead, bytesWritten;
+
+    printf("Connecting to server...\n");
+    pipe = CreateFileA(
+        PIPE_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL);
+
+    if (pipe == INVALID_HANDLE_VALUE) {
+        printf("Failed to connect to named pipe. Error: %ld\n", GetLastError());
+        return 1;
+    }
+
+    printf("Connected to server.\n");
+
+    // Get nickname
+    printf("Enter your username: ");
+    fgets(name, sizeof(name), stdin);
+    name[strcspn(name, "\n")] = '\0'; // Remove trailing newline
+
+    while (1) {
+        // Get user input
+        printf("Enter a message (type 'Exit' to quit): ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+        buffer[strcspn(buffer, "\n")] = '\0'; // Remove trailing newline
+
+        // Prepend nickname to the message
+        char message[BUFFER_SIZE];
+        snprintf(message, sizeof(message), "%s: %s", name, buffer);
+
+        // Send message to server
+        BOOL result = WriteFile(pipe, message, strlen(message), &bytesWritten, NULL);
+        if (result) {
+            printf("Sent\n");
+        } else {
+            printf("Failed to send\n");
+            break;
+        }
+
+        // Check for exit condition
+        if (strcmp(buffer, "Exit") == 0) {
+            printf("Exiting...\n");
+            break;
+        }
+
+        // Read server response
+        result = ReadFile(pipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+        if (!result || bytesRead == 0) {
+            printf("Failed to read from pipe. Error: %ld\n", GetLastError());
+            break;
+        }
+
+        buffer[bytesRead] = '\0'; // Null-terminate the string
+        printf("Server response -> \n %s\n", buffer);
+    }
+
+    CloseHandle(pipe);
+    return 0;
+}
