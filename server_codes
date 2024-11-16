@@ -1,0 +1,135 @@
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define BUFFER_SIZE 1024
+#define PIPE_NAME "\\\\.\\pipe\\MyNamedPipe"
+#define MAX_CLIENTS 10
+
+// Structure to hold client information
+typedef struct {
+    HANDLE pipe;
+    char name[50];
+} Client;
+
+// Global array of clients
+Client clients[MAX_CLIENTS];
+int clientCount = 0;
+CRITICAL_SECTION cs; // For thread safety
+
+// Function to broadcast messages to all clients
+void BroadcastMessage(const char* message, HANDLE senderPipe) {
+    EnterCriticalSection(&cs);
+    for (int i = 0; i < clientCount; i++) {
+        if (clients[i].pipe != senderPipe) { // Don't send the message back to the sender
+            DWORD bytesWritten;
+            WriteFile(clients[i].pipe, message, strlen(message), &bytesWritten, NULL);
+        }
+    }
+    LeaveCriticalSection(&cs);
+}
+
+// Updated HandleClient function
+DWORD WINAPI HandleClient(LPVOID lpParam) {
+    HANDLE pipe = (HANDLE)lpParam;
+    char buffer[BUFFER_SIZE];
+    DWORD bytesRead;
+
+    while (1) {
+        // Read client message
+        BOOL result = ReadFile(pipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+        if (!result || bytesRead == 0) {
+            printf("Client disconnected or read error.\n");
+            break;
+        }
+
+        buffer[bytesRead] = '\0'; // Null-terminate the string
+        printf("Received: %s\n", buffer);
+
+        // Check for exit condition
+        if (strcmp(buffer, "Exit") == 0) {
+            printf("Client requested to exit.\n");
+            break;
+        }
+
+        // Broadcast the message to all other clients
+        BroadcastMessage(buffer, pipe);
+    }
+
+    // Remove client from the list
+    EnterCriticalSection(&cs);
+    for (int i = 0; i < clientCount; i++) {
+        if (clients[i].pipe == pipe) {
+            // Shift the remaining clients down
+            for (int j = i; j < clientCount - 1; j++) {
+                clients[j] = clients[j + 1];
+            }
+            clientCount--;
+            break;
+        }
+    }
+    LeaveCriticalSection(&cs);
+
+    FlushFileBuffers(pipe);
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+    return 0; // Return from thread
+}
+
+int main() {
+    printf("Starting server...\n");
+    InitializeCriticalSection(&cs); // Initialize critical section
+
+    while (1) {
+        // Create a new named pipe
+        HANDLE pipe = CreateNamedPipeA(
+            PIPE_NAME,
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            MAX_CLIENTS,
+            BUFFER_SIZE,
+            BUFFER_SIZE,
+            0,
+            NULL);
+
+        if (pipe == INVALID_HANDLE_VALUE) {
+            printf("Failed to create named pipe. Error: %ld\n", GetLastError());
+            return 1;
+        }
+
+        printf("new user is connected ...\n");
+        BOOL connected = ConnectNamedPipe(pipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+        if (connected) {
+            // Check if we can add a new client
+            if (clientCount < MAX_CLIENTS) {
+                // Get nickname from the client
+                char name[50];
+                DWORD bytesRead;
+                ReadFile(pipe, name, sizeof(name) - 1, &bytesRead, NULL);
+                name[bytesRead] = '\0'; // Null-terminate the string
+                printf("Client %s connected.\n", name);
+
+                // Add the new client to the clients array
+                EnterCriticalSection(&cs);
+                clients[clientCount].pipe = pipe;
+                strncpy(clients[clientCount].name, name, sizeof(clients[clientCount].name) - 1);
+                clients[clientCount].name[sizeof(clients[clientCount].name) - 1] = '\0'; // Ensure null termination
+                clientCount++;
+                LeaveCriticalSection(&cs);
+
+                // Create a new thread to handle the client
+                CreateThread(NULL, 0, HandleClient, (LPVOID)pipe, 0, NULL);
+            } else {
+                printf("Maximum client limit reached. Rejecting new connection.\n");
+                DisconnectNamedPipe(pipe);
+                CloseHandle(pipe);
+            }
+        } else {
+            CloseHandle(pipe);
+        }
+    }
+
+    DeleteCriticalSection(&cs); // Clean up critical section
+    return 0;
+}
